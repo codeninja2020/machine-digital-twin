@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Machine_1 digital twin</title>
+<style>
+  :root { --bg:#14171a; --panel:#1d2126; --ink:#eef0f2; --quiet:#9aa3ab; --ok:#2fbf71; --bad:#e5533d; --line:#2c3238; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:15px/1.4 -apple-system, BlinkMacSystemFont, "Helvetica Neue", sans-serif; height:100vh; display:grid; grid-template-columns: 1fr 340px; }
+  #scene { position:relative; }
+  #scene canvas { display:block; width:100%; height:100%; }
+  #hint { position:absolute; left:16px; bottom:14px; color:var(--quiet); font-size:13px; }
+  aside { background:var(--panel); border-left:1px solid var(--line); padding:24px; display:flex; flex-direction:column; gap:18px; }
+  h1 { margin:0; font-size:18px; font-weight:600; }
+  .mono { font-family: ui-monospace, Menlo, monospace; font-size:13px; color:var(--quiet); }
+  #status { padding:10px 14px; border-radius:8px; font-weight:600; text-align:center; background:#333; }
+  .grid { display:grid; grid-template-columns: 1fr 1fr; gap:12px; }
+  .card { background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:12px; }
+  .card .k { color:var(--quiet); font-size:12px; }
+  .card .v { font-size:22px; font-weight:600; margin-top:2px; }
+  canvas#spark { width:100%; height:90px; background:var(--bg); border:1px solid var(--line); border-radius:8px; }
+  #conn { font-size:12px; color:var(--quiet); }
+</style>
+</head>
+<body>
+<div id="scene"><div id="hint">Drag to rotate · colour comes from primvars:displayColor on the USD stage</div></div>
+<aside>
+  <div>
+    <h1>Machine_1</h1>
+    <div class="mono" id="prim">/World/Machine_1</div>
+  </div>
+  <div id="status">Waiting for data…</div>
+  <div class="grid">
+    <div class="card"><div class="k">Temperature (°C)</div><div class="v" id="temp">–</div></div>
+    <div class="card"><div class="k">Vibration (g)</div><div class="v" id="vib">–</div></div>
+    <div class="card"><div class="k">Fault probability</div><div class="v" id="prob">–</div></div>
+    <div class="card"><div class="k">Threshold</div><div class="v" id="thr">–</div></div>
+  </div>
+  <div>
+    <div class="k mono" style="margin-bottom:6px">Fault probability, last 60 s</div>
+    <canvas id="spark" width="584" height="180"></canvas>
+  </div>
+  <div id="conn">Connecting to twin…</div>
+</aside>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const history = [];
+let cube = null;
+
+// ---------- 3D scene (three.js) ----------
+if (window.THREE) {
+  const host = $("scene");
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  host.appendChild(renderer.domElement);
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x14171a);
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 100);
+  camera.position.set(3, 2.4, 3.6);
+  camera.lookAt(0, 0.5, 0);
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x303840, 0.9));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.8);
+  sun.position.set(4, 6, 3);
+  scene.add(sun);
+  scene.add(new THREE.GridHelper(8, 16, 0x3a4148, 0x262b30));
+  cube = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 1),
+                        new THREE.MeshStandardMaterial({ color: 0x777777, roughness: 0.55 }));
+  cube.position.y = 0.5;
+  scene.add(cube);
+
+  let dragging = false, lastX = 0, yaw = 0.6;
+  host.addEventListener("pointerdown", e => { dragging = true; lastX = e.clientX; });
+  window.addEventListener("pointerup", () => dragging = false);
+  window.addEventListener("pointermove", e => { if (dragging) { yaw += (e.clientX - lastX) * 0.01; lastX = e.clientX; } });
+
+  const resize = () => {
+    const w = host.clientWidth, h = host.clientHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h; camera.updateProjectionMatrix();
+  };
+  window.addEventListener("resize", resize); resize();
+  (function tick() { cube.rotation.y = yaw; renderer.render(scene, camera); requestAnimationFrame(tick); })();
+} else {
+  $("hint").textContent = "3D view needs internet for three.js; readouts below still work.";
+}
+
+// ---------- sparkline ----------
+function drawSpark(threshold) {
+  const c = $("spark"), g = c.getContext("2d"), W = c.width, H = c.height;
+  g.clearRect(0, 0, W, H);
+  const y = p => H - 10 - p * (H - 20);
+  g.strokeStyle = "#e5533d"; g.setLineDash([6, 6]); g.lineWidth = 2;
+  g.beginPath(); g.moveTo(0, y(threshold)); g.lineTo(W, y(threshold)); g.stroke();
+  g.setLineDash([]); g.strokeStyle = "#eef0f2"; g.lineWidth = 3; g.beginPath();
+  history.forEach((p, i) => {
+    const x = (i / 59) * W;
+    i ? g.lineTo(x, y(p)) : g.moveTo(x, y(p));
+  });
+  g.stroke();
+}
+
+// ---------- live connection to twin.py ----------
+function connect() {
+  const ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onopen = () => $("conn").textContent = "Live: reading values from the USD stage";
+  ws.onclose = () => { $("conn").textContent = "Disconnected, retrying…"; setTimeout(connect, 2000); };
+  ws.onmessage = ev => {
+    const s = JSON.parse(ev.data);
+    if (s.faultProbability == null) return;
+    const [r, g, b] = s.color;
+    if (cube) cube.material.color.setRGB(r, g, b);
+    $("temp").textContent = s.temperature.toFixed(1);
+    $("vib").textContent = s.vibration.toFixed(3);
+    $("prob").textContent = s.faultProbability.toFixed(2);
+    $("thr").textContent = s.threshold.toFixed(2);
+    const st = $("status");
+    st.textContent = s.status;
+    st.style.background = s.status === "FAULT" ? "var(--bad)" : "var(--ok)";
+    st.style.color = "#0b0d0f";
+    history.push(s.faultProbability);
+    if (history.length > 60) history.shift();
+    drawSpark(s.threshold);
+  };
+}
+connect();
+</script>
+</body>
+</html>

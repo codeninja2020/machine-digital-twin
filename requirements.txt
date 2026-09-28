@@ -1,0 +1,6 @@
+numpy
+onnx
+onnxruntime
+aiohttp
+usd-core
+requests
